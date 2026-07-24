@@ -1,6 +1,6 @@
 # Schema Coding
 
-Schema Coding treats an LLM as a language runtime and keeps judgment in a persistent, editable backend. This demo runs one incident through Markdown nodes, follows explicit rejection routes, and saves the full trail instead of hiding it in a chat. It accompanies [the Schema Coding essay](ESSAY_URL_HERE).
+Schema Coding treats an LLM as a language runtime and keeps judgment in a persistent, editable backend. This demo runs one incident through Markdown nodes, follows explicit rejection routes, and saves the full trail instead of hiding it in a chat. It accompanies [the Schema Coding essay](essay.md).
 
 ## Quickstart
 
