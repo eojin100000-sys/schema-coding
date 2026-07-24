@@ -17,6 +17,26 @@ Override the default model if needed:
 export SCHEMA_MODEL="another-anthropic-model"
 ```
 
+
+## Try it without an API key
+
+```sh
+python runner.py --mock cases/sample-incident.md
+```
+
+Mock mode replays scripted verdicts so you can watch the routing itself: `data-integrity` rejects and sends execution back to `blast-radius`; later `rollback-safety` rejects and reopens `change-correlation`. No network, no key.
+
+## The comparison that matters
+
+Run the same incident twice with a real key:
+
+```sh
+python runner.py --baseline cases/sample-incident.md   # same criteria, one shot, no wiring
+python runner.py cases/sample-incident.md              # schema run with rejection routes
+```
+
+The baseline gets every criterion in a single prompt and is free to notice that the rollback is unsafe — and recommend it anyway. The schema run cannot: a rejected node loses the right to continue. Both runs land in `runs/` so you can diff the behavior, not the vibes.
+
 ## Example trace
 
 ```text

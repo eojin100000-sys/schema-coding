@@ -52,19 +52,51 @@ def call_model(key, model, system, user):
     if not text:
         raise RuntimeError("Anthropic returned no text")
     return text
+
+MOCK_SCRIPT = {  # node_id -> replies per visit; demos both rejection routes, no API needed
+    "blast-radius": [
+        "Checkout writes are affected; read paths look clean. Scope is bounded to the reservation write path.\nVERDICT: PASS",
+        "Re-checked with integrity findings: scope still bounded to reservation writes.\nVERDICT: PASS",
+    ],
+    "data-integrity": [
+        "38k rows carry the new token, replica r3 shows duplicate-key apply errors, and no invariant check has run. Corruption cannot be excluded.\nVERDICT: REJECT",
+        "Treating replica r3 as quarantined and invariant check as scheduled; no further unverified mutation path remains.\nVERDICT: PASS",
+    ],
+    "change-correlation": [
+        "500s began six minutes after v1842 touched the write path. Correlation is strong and specific.\nVERDICT: PASS",
+        "Correlation unchanged after re-entry.\nVERDICT: PASS",
+    ],
+    "rollback-safety": [
+        "Old binary cannot decode new reservation events and 38k rows already use them. Rollback risks unreadable state.\nVERDICT: REJECT",
+        "With dual-write disabled via flag first, rollback no longer strands undecodable events.\nVERDICT: PASS",
+    ],
+}
+_mock_visits = {}
+
+def mock_model(node_id):
+    replies = MOCK_SCRIPT.get(node_id, ["No script for this node.\nVERDICT: PASS"])
+    i = min(_mock_visits.get(node_id, 0), len(replies) - 1)
+    _mock_visits[node_id] = i + 1
+    return replies[i]
+
 def parse_verdict(reply):
     pattern = r"(?:^|\n)VERDICT:[ \t]*(PASS|REJECT)[ \t]*\Z"
     match = re.search(pattern, reply, re.IGNORECASE)
     return match.group(1).upper() if match else "ERROR"
 def main():
-    if len(sys.argv) != 2:
-        print("usage: python runner.py cases/sample-incident.md", file=sys.stderr)
+    args = sys.argv[1:]
+    mock = "--mock" in args
+    baseline = "--baseline" in args
+    paths = [a for a in args if not a.startswith("--")]
+    if len(paths) != 1:
+        print("usage: python runner.py [--mock] [--baseline] cases/sample-incident.md",
+              file=sys.stderr)
         return 2
     key = os.environ.get("ANTHROPIC_API_KEY")
-    if not key:
-        print("ANTHROPIC_API_KEY is not set", file=sys.stderr)
+    if not key and not mock:
+        print("ANTHROPIC_API_KEY is not set (or use --mock)", file=sys.stderr)
         return 2
-    case = read(Path(sys.argv[1]))
+    case = read(Path(paths[0]))
     model = os.environ.get("SCHEMA_MODEL", "claude-sonnet-4-6")
     contract = read(ROOT / "schema/contract.md")
     priority = read(ROOT / "schema/wiring/conflict-priority.md")
@@ -74,6 +106,22 @@ def main():
     )
     order, routes = load_order(), load_routes()
     nodes = {node_id: read(ROOT / f"schema/nodes/{node_id}.md") for node_id in order}
+
+    if baseline:  # one-shot control: same criteria, no wiring, no rejection routes
+        all_nodes = "\n\n".join(nodes[n] for n in order)
+        user = (f"CRITERIA\n{all_nodes}\n\nINCIDENT\n{case}\n\n"
+                "Assess the incident against all criteria, then give one final "
+                "recommendation for what the team should do next.")
+        reply = ("[mock baseline unavailable - baseline needs a real model]"
+                 if mock else call_model(key, model, contract, user))
+        started = datetime.now(timezone.utc)
+        run_path = ROOT / "runs" / started.strftime("baseline-%Y%m%dT%H%M%S%fZ.json")
+        run_path.write_text(json.dumps({"timestamp": started.isoformat(),
+            "model": model, "mode": "baseline", "reply": reply},
+            ensure_ascii=False, indent=2), encoding="utf-8")
+        print(reply)
+        print(f"\nlog -> {run_path.relative_to(ROOT)}")
+        return 0
     queue, findings, steps = order.copy(), [], []
     started = datetime.now(timezone.utc)
     run_path = ROOT / "runs" / started.strftime("%Y%m%dT%H%M%S%fZ.json")
@@ -85,7 +133,7 @@ def main():
         prior = "\n\n".join(findings) or "None yet."
         user = f"NODE CONTRACT\n{node}\n\nINCIDENT\n{case}\n\nFINDINGS SO FAR\n{prior}"
         try:
-            reply = call_model(key, model, system, user)
+            reply = mock_model(node_id) if mock else call_model(key, model, system, user)
             verdict = parse_verdict(reply)
         except Exception as error:
             reply, verdict = f"ERROR: {error}", "ERROR"
@@ -108,7 +156,7 @@ def main():
     else:
         print("     20-step cap reached; HALT - escalate to human")
 
-    log = {"timestamp": started.isoformat(), "model": model, "steps": steps}
+    log = {"timestamp": started.isoformat(), "model": ("mock" if mock else model), "steps": steps}
     run_path.write_text(
         json.dumps(log, ensure_ascii=False, indent=2), encoding="utf-8"
     )
